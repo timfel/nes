@@ -1,14 +1,18 @@
 import logging
 from nes import NES, SYNC_AUDIO, SYNC_NONE, SYNC_PYGAME, SYNC_VSYNC
+from nes.pycore.mos6502 import MOS6502
 from nes.pycore.system import NES as pyNES
+from nes.pycore.ppu import NESPPU
 from tests.blargg_tests import run_tests
-
+import pyjion
 #run_tests()
 
+pyjion.enable()
+pyjion.config(graph=True, level=2)
 nes = None
 
 # Mapper 0
-nes = NES("./roms/Super Mario Bros. (Japan, USA).nes", sync_mode=SYNC_AUDIO, opengl=True)
+#nes = NES("./roms/Super Mario Bros. (Japan, USA).nes", sync_mode=SYNC_AUDIO, opengl=True)
 #nes = NES("./roms/Balloon_fight.nes", log_file="./logs/nes.log", log_level=logging.INFO)
 #nes = NES("./roms/donkey kong.nes", log_file="./logs/nes.log", log_level=logging.INFO)
 #nes = NES("./roms/Ice Climber.nes", log_file="./logs/nes.log", log_level=logging.INFO)
@@ -120,11 +124,19 @@ nes = NES("./roms/Super Mario Bros. (Japan, USA).nes", sync_mode=SYNC_AUDIO, ope
 #buffer = nes.run_frame_headless(run_frames=1)
 
 #python version:
-#nes = pyNES("./roms/Super Mario Bros. (Japan, USA).nes")
-
+#nes = NES("./roms/Super Mario Bros (E).nes", sync_mode=SYNC_AUDIO, opengl=True)
+nes = pyNES("./roms/Super Mario Bros (E).nes")
 
 
 
 if nes is not None:
     nes.run()
 
+print(pyjion.graph(NESPPU.run_cycles.__code__))
+print(pyjion.info(NESPPU.run_cycles.__code__))
+print(pyjion.graph(NESPPU._overlay_sprites.__code__))
+print(pyjion.info(NESPPU._overlay_sprites.__code__))
+print(pyjion.graph(NESPPU._get_bkg_pixel.__code__))
+print(pyjion.info(NESPPU._get_bkg_pixel.__code__))
+print(pyjion.graph(MOS6502.run_next_instr.__code__))
+print(pyjion.info(MOS6502.run_next_instr.__code__))
