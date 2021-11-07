@@ -1,4 +1,4 @@
-import pyximport; pyximport.install()
+# import pyximport; pyximport.install()
 
 from nes.pycore.mos6502 import MOS6502
 #from .cycore.mos6502 import MOS6502

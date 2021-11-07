@@ -1,6 +1,6 @@
-import pyximport; pyximport.install()
+# import pyximport; pyximport.install()
 
-from .cycore.carts import NESCart0, NESCart1, NESCart2, NESCart4
+# from .cycore.carts import NESCart0, NESCart1, NESCart2, NESCart4
 from nes.pycore.carts import NESCart0 as pyNESCart0
 from .pycore.bitwise import upper_nibble, lower_nibble, bit_low, bit_high
 

@@ -1,7 +1,7 @@
 import logging
 import time
 
-import pyximport; pyximport.install()
+# import pyximport; pyximport.install()
 
 from nes.pycore.memory import NESVRAM
 from nes.pycore.bitwise import bit_high, bit_low, set_bit, clear_bit, set_high_byte, set_low_byte
