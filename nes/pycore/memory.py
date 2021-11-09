@@ -130,7 +130,6 @@ class NESMappedRAM(MemoryBase):
         Write one byte of memory in the NES address space
         """
         #logging.log(LOG_MEMORY, "write {:02X} --> {:04X}".format(value, address), extra={"source": "mem"})
-
         if address < RAM_END:    # RAM and its mirrors
             self.ram[address % RAM_SIZE] = value
         elif address < PPU_END:  # PPU registers
@@ -153,6 +152,7 @@ class NESMappedRAM(MemoryBase):
         else:
             # cartridge space; pass this to the cart, which might do its own mapping
             self.cart.write(address, value)
+        
 
     def run_oam_dma(self, page):
         """
@@ -236,6 +236,7 @@ class NESVRAM(MemoryBase):
                 address -= 0x10
             return self.palette_ram, address % PALETTE_SIZE_BYTES
 
+    @lru_cache
     def read(self, address):
         memory, address_decoded = self.decode_address(address)
         value = memory[address_decoded]
@@ -244,3 +245,4 @@ class NESVRAM(MemoryBase):
     def write(self, address, value):
         memory, address = self.decode_address(address)
         memory[address] = value
+        self.read.cache_clear()

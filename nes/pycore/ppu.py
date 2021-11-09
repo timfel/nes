@@ -543,8 +543,6 @@ class NESPPU:
 
             if frame_ended:
                 self._new_frame()
-
-            #logging.log(LOG_PPU, self.log_line(), extra={"source": "PPU"})
         return frame_ended
 
     def fill_bkg_latches(self, line, col):
@@ -608,7 +606,7 @@ class NESPPU:
         px = (self.pixel - 1) % 8 + fine_x
         mask = 1 << (15 - px)
         v = ((self._pattern_lo & mask) > 0) + ((self._pattern_hi & mask) > 0) * 2
-        return self._palette[int(px / 8)][v] if v > 0 else self.transparent_color
+        return self._palette[px // 8][v] if v > 0 else self.transparent_color
 
     def log_line(self):
         log = "{:5d}, {:3d}, {:3d}   ".format(self.frames_since_reset, self.line, self.pixel)

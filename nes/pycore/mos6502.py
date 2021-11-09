@@ -2,7 +2,30 @@ import logging
 
 from nes.instructions import INSTRUCTION_SET, PyNamedInstruction, AddressModes
 
-#from nes import LOG_CPU
+# Masks for the bits in the status register
+SR_N_MASK = 0b10000000  # negative
+SR_V_MASK = 0b01000000  # overflow
+SR_X_MASK = 0b00100000  # unused, but should be set to 1
+SR_B_MASK = 0b00010000  # the "break" flag (indicates BRK was executed, only set on the stack copy)
+SR_D_MASK = 0b00001000  # decimal
+SR_I_MASK = 0b00000100  # interrupt disable
+SR_Z_MASK = 0b00000010  # zero
+SR_C_MASK = 0b00000001  # carry
+
+# some useful memory locations
+STACK_PAGE = 0x0100           # stack is held on page 1, from 0x0100 to 0x01FF
+IRQ_BRK_VECTOR_ADDR = 0xFFFE  # start of 16 bit location containing the address of the IRQ/BRK interrupt handler
+RESET_VECTOR_ADDR = 0xFFFC    # start of 16 bit location containing the address of the RESET handler
+NMI_VECTOR_ADDR = 0xFFFA      # start of 16 bit location of address of the NMI (non maskable interrupt) handler
+
+# 6502 is little endian (least significant byte first in 16bit words)
+LO_BYTE = 0
+HI_BYTE = 1
+
+# cycles taken to do the NMI or IRQ interrupt - (this is a guess, based on BRK, couldn't find a ref for this!)
+INTERRUPT_REQUEST_CYCLES = 7
+
+OAM_DMA_CPU_CYCLES = 513
 
 class MOS6502:
     """
@@ -32,31 +55,6 @@ class MOS6502:
        [16] Undocumented opcodes: http://hitmen.c02.at/files/docs/c64/NoMoreSecrets-NMOS6510UnintendedOpcodes-20162412.pdf
 
     """
-
-    # Masks for the bits in the status register
-    SR_N_MASK = 0b10000000  # negative
-    SR_V_MASK = 0b01000000  # overflow
-    SR_X_MASK = 0b00100000  # unused, but should be set to 1
-    SR_B_MASK = 0b00010000  # the "break" flag (indicates BRK was executed, only set on the stack copy)
-    SR_D_MASK = 0b00001000  # decimal
-    SR_I_MASK = 0b00000100  # interrupt disable
-    SR_Z_MASK = 0b00000010  # zero
-    SR_C_MASK = 0b00000001  # carry
-
-    # some useful memory locations
-    STACK_PAGE = 0x0100           # stack is held on page 1, from 0x0100 to 0x01FF
-    IRQ_BRK_VECTOR_ADDR = 0xFFFE  # start of 16 bit location containing the address of the IRQ/BRK interrupt handler
-    RESET_VECTOR_ADDR = 0xFFFC    # start of 16 bit location containing the address of the RESET handler
-    NMI_VECTOR_ADDR = 0xFFFA      # start of 16 bit location of address of the NMI (non maskable interrupt) handler
-
-    # 6502 is little endian (least significant byte first in 16bit words)
-    LO_BYTE = 0
-    HI_BYTE = 1
-
-    # cycles taken to do the NMI or IRQ interrupt - (this is a guess, based on BRK, couldn't find a ref for this!)
-    INTERRUPT_REQUEST_CYCLES = 7
-
-    OAM_DMA_CPU_CYCLES = 513
 
     def __init__(self, memory, support_BCD=False, undocumented_support_level=1, aax_sets_flags=False, stack_underflow_causes_exception=True):
 
@@ -104,7 +102,7 @@ class MOS6502:
         Resets the CPU
         """
         # read the program counter from the RESET_VECTOR_ADDR
-        self.PC = self._read_word(self.RESET_VECTOR_ADDR)
+        self.PC = self._read_word(RESET_VECTOR_ADDR)
 
         # clear the registers
         self.A = 0  # accumulator
@@ -165,11 +163,11 @@ class MOS6502:
         """
         print("A: ${0:02x}     X: ${0:02x}     Y: ${0:02x}".format(self.A, self.X, self.Y))
         print("SP: ${:x}".format(self.SP))
-        print("STACK: (head) ${0:02x}".format(self.memory.read(self.STACK_PAGE + self.SP)))
+        print("STACK: (head) ${0:02x}".format(self.memory.read(STACK_PAGE + self.SP)))
         if 0xFF - self.SP > 0:
-            print("              ${:x}".format(self.memory.read(self.STACK_PAGE + self.SP + 1)))
+            print("              ${:x}".format(self.memory.read(STACK_PAGE + self.SP + 1)))
         if 0xFF - self.SP > 1:
-            print("              ${:x}".format(self.memory.read(self.STACK_PAGE + self.SP + 2)))
+            print("              ${:x}".format(self.memory.read(STACK_PAGE + self.SP + 2)))
         print("Flags:  NV-BDIZC      as byte:  ${:x}".format(self._status_to_byte()))
         print("        {0:08b}".format(self._status_to_byte()))
 
@@ -247,7 +245,7 @@ class MOS6502:
         return str
 
     def oam_dma_pause(self):
-        cycles = self.OAM_DMA_CPU_CYCLES + self.cycles_since_reset % 2
+        cycles = OAM_DMA_CPU_CYCLES + self.cycles_since_reset % 2
         self.cycles_since_reset += cycles
         return cycles
 
@@ -256,8 +254,8 @@ class MOS6502:
         Sets the reset vector (at fixed mem address), which tells the program counter where to start on a reset
         :param reset_vector: 16-bit address to which PC will be set after a reset
         """
-        self.memory.write(self.RESET_VECTOR_ADDR, reset_vector & 0x00FF)  # low byte
-        self.memory.write(self.RESET_VECTOR_ADDR + 1, (reset_vector & 0xFF00) >> 8)  # high byte
+        self.memory.write(RESET_VECTOR_ADDR, reset_vector & 0x00FF)  # low byte
+        self.memory.write(RESET_VECTOR_ADDR + 1, (reset_vector & 0xFF00) >> 8)  # high byte
 
     @staticmethod
     def _from_le(data):
@@ -266,7 +264,7 @@ class MOS6502:
         :param data: two-byte little endian array
         :return: an integer in the range 0-65535
         """
-        return (data[MOS6502.HI_BYTE] << 8) + data[MOS6502.LO_BYTE]
+        return (data[HI_BYTE] << 8) + data[LO_BYTE]
 
     def _read_word(self, addr, wrap_at_page=False):
         """
@@ -286,18 +284,18 @@ class MOS6502:
         """
         Trigger a non maskable interrupt (NMI)
         """
-        self._interrupt(self.NMI_VECTOR_ADDR)
-        self.cycles_since_reset += self.INTERRUPT_REQUEST_CYCLES
-        return self.INTERRUPT_REQUEST_CYCLES
+        self._interrupt(NMI_VECTOR_ADDR)
+        self.cycles_since_reset += INTERRUPT_REQUEST_CYCLES
+        return INTERRUPT_REQUEST_CYCLES
 
     def trigger_irq(self):
         """
         Trigger a maskable hardware interrupt (IRQ); if interrupt disable bit (self.I) is set, ignore
         """
         if not self.I:
-            self._interrupt(self.IRQ_BRK_VECTOR_ADDR)
-            self.cycles_since_reset += self.INTERRUPT_REQUEST_CYCLES
-            return self.INTERRUPT_REQUEST_CYCLES
+            self._interrupt(IRQ_BRK_VECTOR_ADDR)
+            self.cycles_since_reset += INTERRUPT_REQUEST_CYCLES
+            return INTERRUPT_REQUEST_CYCLES
         else:
             return 0  # ignored!
 
@@ -358,15 +356,15 @@ class MOS6502:
             elif instr.mode == AddressModes.ZEROPAGE_Y:
                 address = (data[0] + self.Y) & 0xFF
             elif instr.mode == AddressModes.ABSOLUTE:
-                address = self._from_le(data)
+                address = (data[HI_BYTE] << 8) + data[LO_BYTE]
             elif instr.mode == AddressModes.ABSOLUTE_X:
-                address = (self._from_le(data) + self.X) & 0xFFFF
-                if data[self.LO_BYTE] + self.X > 0xFF and instr.cycles > int(instr.cycles):
+                address = ((data[HI_BYTE] << 8) + data[LO_BYTE] + self.X) & 0xFFFF
+                if data[LO_BYTE] + self.X > 0xFF and instr.cycles > int(instr.cycles):
                     # extra cycles if cross the page boundary
                     extra_cycles += 1
             elif instr.mode == AddressModes.ABSOLUTE_Y:
-                address = (self._from_le(data) + self.Y) & 0xFFFF
-                if data[self.LO_BYTE] + self.Y > 0xFF and instr.cycles > int(instr.cycles):
+                address = ((data[HI_BYTE] << 8) + data[LO_BYTE] + self.Y) & 0xFFFF
+                if data[LO_BYTE] + self.Y > 0xFF and instr.cycles > int(instr.cycles):
                     # extra cycles if cross the page boundary
                     extra_cycles += 1
             elif instr.mode == AddressModes.INDIRECT:
@@ -374,7 +372,7 @@ class MOS6502:
                 # has the jump indirect bug [12] which means it cannot cross page boundaries and instead
                 # wraps around, e.g. read from 0x12ff reads 0x12ff and 0x1200
                 #address =
-                address = self._read_word(self._from_le(data), wrap_at_page=True)
+                address = self._read_word((data[HI_BYTE] << 8) + data[LO_BYTE], wrap_at_page=True)
                 #address = self._from_le(self.memory.read_block(self._from_le(data), bytes=2))
             elif instr.mode == AddressModes.INDIRECT_X:
                 address = self._read_word((data[0] + self.X) & 0xFF, wrap_at_page=True)
@@ -405,32 +403,32 @@ class MOS6502:
         the call (to push the status to the stack, which is the only use of this instruction within the CPU) came from
         a hardware interrupt (IRQ or NMI).
         """
-        return (  self.N * self.SR_N_MASK
-                + self.V * self.SR_V_MASK
-                + self.SR_X_MASK              # the unused bit should always be set high
-                + b_flag * self.SR_B_MASK     # the "B flag" should be set high if called from PHP or BRK [10] low o/w
-                + self.D * self.SR_D_MASK
-                + self.I * self.SR_I_MASK
-                + self.Z * self.SR_Z_MASK
-                + self.C * self.SR_C_MASK) & 0xFF   # this final and forces it to be treated as unsigned
+        return (  self.N * SR_N_MASK
+                + self.V * SR_V_MASK
+                + SR_X_MASK              # the unused bit should always be set high
+                + b_flag * SR_B_MASK     # the "B flag" should be set high if called from PHP or BRK [10] low o/w
+                + self.D * SR_D_MASK
+                + self.I * SR_I_MASK
+                + self.Z * SR_Z_MASK
+                + self.C * SR_C_MASK) & 0xFF   # this final and forces it to be treated as unsigned
 
     def _status_from_byte(self, sr_byte):
         """
         Sets the processor status from an 8-bit value as found on the stack.
         Bit 5 (B flag) is NEVER set in the status register (but is on the stack), so it is ignored here
         """
-        self.N = (sr_byte & self.SR_N_MASK) > 0
-        self.V = (sr_byte & self.SR_V_MASK) > 0
-        self.D = (sr_byte & self.SR_D_MASK) > 0
-        self.I = (sr_byte & self.SR_I_MASK) > 0
-        self.Z = (sr_byte & self.SR_Z_MASK) > 0
-        self.C = (sr_byte & self.SR_C_MASK) > 0
+        self.N = (sr_byte & SR_N_MASK) > 0
+        self.V = (sr_byte & SR_V_MASK) > 0
+        self.D = (sr_byte & SR_D_MASK) > 0
+        self.I = (sr_byte & SR_I_MASK) > 0
+        self.Z = (sr_byte & SR_Z_MASK) > 0
+        self.C = (sr_byte & SR_C_MASK) > 0
 
     def push_stack(self, v):
         """
         Push a byte value onto the stack
         """
-        self.memory.write(self.STACK_PAGE + self.SP, v)
+        self.memory.write(STACK_PAGE + self.SP, v)
         #if self.SP == 0:
         #    if self.stack_overflow_causes_exception:
         #        raise OverflowError("Stack overflow")
@@ -445,7 +443,7 @@ class MOS6502:
         if self.SP == 0xFF and self.stack_underflow_causes_exception:
             raise OverflowError("Stack underflow")
         self.SP = (self.SP + 1) & 0xFF
-        v = self.memory.read(self.STACK_PAGE + self.SP)
+        v = self.memory.read(STACK_PAGE + self.SP)
         return v
 
     @staticmethod
@@ -603,8 +601,8 @@ class MOS6502:
         given, and sets the zero flag if A & v == 0
         """
         v = self.memory.read(addr)
-        self.N = (v & self.SR_N_MASK) > 0
-        self.V = (v & self.SR_V_MASK) > 0
+        self.N = (v & SR_N_MASK) > 0
+        self.V = (v & SR_V_MASK) > 0
         self.Z = (self.A & v) == 0
 
     def _bmi(self, offset, _):
@@ -655,7 +653,7 @@ class MOS6502:
         the stack
         """
         #
-        self._interrupt(self.IRQ_BRK_VECTOR_ADDR, is_brk=True)
+        self._interrupt(IRQ_BRK_VECTOR_ADDR, is_brk=True)
 
     def _bvc(self, offset, _):
         """
