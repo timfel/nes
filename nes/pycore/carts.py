@@ -16,18 +16,18 @@ class CartBase(MemoryBase):
     def write_ppu(self, address, v):
         raise NotImplementedError()
 
+# CPU memory space
+RAM_START = 0x6000
+PRG_ROM_START = 0x8000
 
+# PPU memory space
+CHR_ROM_START = 0x0000
 
 class NESCart0(CartBase):
     """
     Basic NES Cartridge (Type 0 / MMC0).  Consists of up to 8kB RAM, 32kB PRG ROM, 8kB CHR ROM
     """
-    # CPU memory space
-    RAM_START = 0x6000
-    PRG_ROM_START = 0x8000
 
-    # PPU memory space
-    CHR_ROM_START = 0x0000
 
     def __init__(self, prg_rom_data=None, chr_rom_data=None, ram_size_kb=8, prg_start_addr=None, nametable_mirror_pattern=(0,0,1,1)):
         super().__init__()
@@ -52,20 +52,20 @@ class NESCart0(CartBase):
         else:
             self.chr_mem = bytearray(8 * 1024)   # make a RAM
 
-        self.prg_start_addr = prg_start_addr if prg_start_addr else self.PRG_ROM_START
+        self.prg_start_addr = prg_start_addr if prg_start_addr else PRG_ROM_START
         self.nametable_mirror_pattern = nametable_mirror_pattern
         #rom_data_start = load_rom_at - self.PRG_ROM_START
         #self.rom[rom_data_start:rom_data_start + len(rom_data)] = rom_data
 
     def read(self, address):
-        if address < self.PRG_ROM_START:
+        if address < PRG_ROM_START:
             # ram access
             return self.ram[address % len(self.ram)]
         else:
             return self.prg_rom[(address - self.prg_start_addr) % len(self.prg_rom)]
 
     def write(self, address, value):
-        if address < self.PRG_ROM_START:
+        if address < PRG_ROM_START:
             # ram access
             self.ram[address % len(self.ram)] = value
         else:

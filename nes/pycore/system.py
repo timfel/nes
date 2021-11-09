@@ -44,13 +44,14 @@ class InterruptListener:
     def irq_active(self):
         return self._irq
 
+PPU_CYCLES_PER_CPU_CYCLE = 3
+FRAMERATE_FPS = 240
 
 class NES:
     """
     The NES system itself, combining all of the parts, and the interlinks
     """
-    PPU_CYCLES_PER_CPU_CYCLE = 3
-    FRAMERATE_FPS = 240
+
 
     def __init__(self, rom_file, screen_scale=3, log_file=None, log_level=None, prg_start=None):
         """
@@ -167,7 +168,7 @@ class NES:
             cpu_cycles = self.cpu.run_next_instr()
 
         #print(cpu_cycles, self.ppu.line, self.ppu.pixel)
-        vblank_started = self.ppu.run_cycles(cpu_cycles * self.PPU_CYCLES_PER_CPU_CYCLE)
+        vblank_started = self.ppu.run_cycles(cpu_cycles * PPU_CYCLES_PER_CPU_CYCLE)
         #print(cpu_cycles, self.ppu.line, self.ppu.pixel)
         return vblank_started
 
@@ -208,7 +209,7 @@ class NES:
 
                 #print(self.cpu.log_line())
 
-                vblank_started = self.ppu.run_cycles(cpu_cycles * self.PPU_CYCLES_PER_CPU_CYCLE)
+                vblank_started = self.ppu.run_cycles(cpu_cycles * PPU_CYCLES_PER_CPU_CYCLE)
 
             # update the controllers once per frame
             self.controller1.update()
@@ -231,7 +232,7 @@ class NES:
                         self.screen.add_text("saved", (100, 10), (255, 128, 0))
 
             self.screen.show()
-            clock.tick(self.FRAMERATE_FPS)
+            clock.tick(FRAMERATE_FPS)
             #print("frame end:  {:.1f} fps".format(clock.get_fps()))
 
 

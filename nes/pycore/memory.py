@@ -1,9 +1,21 @@
 import logging
-
+from functools import lru_cache
 #from nes import LOG_MEMORY
 
 
 OAM_SIZE_BYTES = 256
+
+RAM_SIZE = 0x800            # 2kB of internal RAM
+NUM_PPU_REGISTERS = 8       # number of ppu registers
+
+RAM_END = 0x0800            # NES main ram to here
+PPU_END = 0x4000            # PPU registers to here
+APU_END = 0x4018            # APU registers (+OAM DMA reg) to here
+APU_UNUSED_END = 0x4020     # generally unused APU and I/O functionality
+OAM_DMA = 0x4014            # OAM DMA register address
+CONTROLLER1 = 0x4016        # port for controller (read controller 1 / write both controllers)
+CONTROLLER2 = 0x4017        # port for controller 2 (read only, writes to this port go to the APU)
+CART_START = 0x4020         # start of cartridge address space
 
 
 class MemoryBase:
@@ -61,21 +73,11 @@ class NESMappedRAM(MemoryBase):
     References:
         [1] CPU memory map:  https://wiki.nesdev.com/w/index.php/CPU_memory_map
     """
-    RAM_SIZE = 0x800            # 2kB of internal RAM
-    NUM_PPU_REGISTERS = 8       # number of ppu registers
 
-    RAM_END = 0x0800            # NES main ram to here
-    PPU_END = 0x4000            # PPU registers to here
-    APU_END = 0x4018            # APU registers (+OAM DMA reg) to here
-    APU_UNUSED_END = 0x4020     # generally unused APU and I/O functionality
-    OAM_DMA = 0x4014            # OAM DMA register address
-    CONTROLLER1 = 0x4016        # port for controller (read controller 1 / write both controllers)
-    CONTROLLER2 = 0x4017        # port for controller 2 (read only, writes to this port go to the APU)
-    CART_START = 0x4020         # start of cartridge address space
 
     def __init__(self, ppu=None, apu=None, cart=None, controller1=None, controller2=None, interrupt_listener=None):
         super().__init__()
-        self.ram = bytearray(self.RAM_SIZE)  # 2kb of internal RAM
+        self.ram = bytearray(RAM_SIZE)  # 2kb of internal RAM
         self.ppu = ppu
         self.apu = apu
         self.cart = cart
@@ -90,39 +92,34 @@ class NESMappedRAM(MemoryBase):
         """
         Read one byte of memory from the NES address space
         """
-        if address < self.RAM_END:    # RAM and its mirrors
-            region = "ram"
-            value = self.ram[address % self.RAM_SIZE]
-        elif address < self.PPU_END:  # PPU registers
-            region = "ppu"
-            register_ix = address % self.NUM_PPU_REGISTERS
+        if address < RAM_END:    # RAM and its mirrors
+            value = self.ram[address % RAM_SIZE]
+        elif address < PPU_END:  # PPU registers
+            register_ix = address % NUM_PPU_REGISTERS
             if self.ppu is not None:
                 value = self.ppu.read_register(register_ix)
             else:
                 value = 0
-        elif address < self.APU_END:
-            region = "apu/oam"
-            if address == self.OAM_DMA and self.ppu:
+        elif address < APU_END:
+            if address == OAM_DMA and self.ppu:
                 # write only
                 value = 0
-            elif address == self.CONTROLLER1:
+            elif address == CONTROLLER1:
                 value = (self.controller1.read_bit() & 0b00011111) + (0x40 & 0b11100000)
                 #print("{:08b}".format(value))
                 #print("{:08b}".format(self._last_bus))
                 # todo: deal with open bus behaviour of upper control lines
-            elif address == self.CONTROLLER2:
+            elif address == CONTROLLER2:
                 # todo: deal with open bus behaviour of upper control lines
                 value = (self.controller2.read_bit() & 0b00011111) + (0x40 & 0b11100000)
             else:
                 # todo: APU registers
                 value = 0
-        elif address < self.APU_UNUSED_END:
+        elif address < APU_UNUSED_END:
             # todo: generally unused APU and I/O functionality
-            region = "apu-unused"
             value = 0
         else:
             # cartridge space; pass this to the cart, which might do its own mapping
-            region = "cart"
             value = self.cart.read(address)
 
         #logging.log(LOG_MEMORY, "read {:04X}  (= {:02X})  region={:10s}".format(address, value, region), extra={"source": "mem"})
@@ -134,23 +131,23 @@ class NESMappedRAM(MemoryBase):
         """
         #logging.log(LOG_MEMORY, "write {:02X} --> {:04X}".format(value, address), extra={"source": "mem"})
 
-        if address < self.RAM_END:    # RAM and its mirrors
-            self.ram[address % self.RAM_SIZE] = value
-        elif address < self.PPU_END:  # PPU registers
-            register_ix = address % self.NUM_PPU_REGISTERS
+        if address < RAM_END:    # RAM and its mirrors
+            self.ram[address % RAM_SIZE] = value
+        elif address < PPU_END:  # PPU registers
+            register_ix = address % NUM_PPU_REGISTERS
             if self.ppu:
                 self.ppu.write_register(register_ix, value)
-        elif address < self.APU_END:
-            if address == self.OAM_DMA:
+        elif address < APU_END:
+            if address == OAM_DMA:
                 if self.ppu:
                     self.run_oam_dma(value)
-            elif address == self.CONTROLLER1:
+            elif address == CONTROLLER1:
                 self.controller1.set_strobe(value)
                 self.controller2.set_strobe(value)
             else:
                 # todo: APU registers
                 pass
-        elif address < self.APU_UNUSED_END:
+        elif address < APU_UNUSED_END:
             # todo: generally unused APU and I/O functionality
             pass
         else:
@@ -177,6 +174,28 @@ class NESMappedRAM(MemoryBase):
         self.interrupt_listener.raise_oam_dma_pause()
 
 
+PATTERN_TABLE_SIZE_BYTES = 4096   # provided by the rom
+NAMETABLES_SIZE_BYTES = 2048
+PALETTE_SIZE_BYTES = 32
+NAMETABLE_LENGTH_BYTES = 1024  # single nametime is this big
+
+# memory map
+NAMETABLE_START = 0x2000
+ATTRIBUTE_TABLE_OFFSET = 0x3C0  # offset of the attribute table from the start of the corresponding nametable
+PALETTE_START = 0x3F00
+
+# Mirror patterns
+# The mirror pattern specifies the underlying nametable at locations 0x2000, 0x2400, 0x2800 and 0x3200
+MIRROR_HORIZONTAL = (0, 0, 1, 1)
+MIRROR_VERTICAL = (0, 1, 0, 1)
+#MIRROR_SINGLE = (0, 0, 0, 0)
+MIRROR_FOUR_SCREEN = (0, 1, 2, 3)
+#MIRROR_DIAGONAL = (0, 1, 1, 0)
+#MIRROR_L_SHAPED = (0, 1, 1, 1)
+#MIRROR_3_SCREEN_V = (0, 2, 1, 2)
+#MIRROR_3_SCREEN_H = (0, 1, 2, 2)
+#MIRROR_3_SCREEN_DIAG = (0, 1, 1, 2)
+
 class NESVRAM(MemoryBase):
     """
     NES video (PPU) RAM, following the PPU memory map pattern
@@ -184,65 +203,44 @@ class NESVRAM(MemoryBase):
     References:
         [1] PPU memory map: https://wiki.nesdev.com/w/index.php/PPU_memory_map
     """
-    PATTERN_TABLE_SIZE_BYTES = 4096   # provided by the rom
-    NAMETABLES_SIZE_BYTES = 2048
-    PALETTE_SIZE_BYTES = 32
-    NAMETABLE_LENGTH_BYTES = 1024  # single nametime is this big
 
-    # memory map
-    NAMETABLE_START = 0x2000
-    ATTRIBUTE_TABLE_OFFSET = 0x3C0  # offset of the attribute table from the start of the corresponding nametable
-    PALETTE_START = 0x3F00
-
-    # Mirror patterns
-    # The mirror pattern specifies the underlying nametable at locations 0x2000, 0x2400, 0x2800 and 0x3200
-    MIRROR_HORIZONTAL = (0, 0, 1, 1)
-    MIRROR_VERTICAL = (0, 1, 0, 1)
-    #MIRROR_SINGLE = (0, 0, 0, 0)
-    MIRROR_FOUR_SCREEN = (0, 1, 2, 3)
-    #MIRROR_DIAGONAL = (0, 1, 1, 0)
-    #MIRROR_L_SHAPED = (0, 1, 1, 1)
-    #MIRROR_3_SCREEN_V = (0, 2, 1, 2)
-    #MIRROR_3_SCREEN_H = (0, 1, 2, 2)
-    #MIRROR_3_SCREEN_DIAG = (0, 1, 1, 2)
 
     def __init__(self, cart, nametable_size_bytes=2048):
         super().__init__()
         self.cart = cart
         # self._pattern_table = bytearray(self.PATTERN_TABLE_SIZE_BYTES)
         self._nametables = bytearray(nametable_size_bytes)
-        self.palette_ram = bytearray(self.PALETTE_SIZE_BYTES)
+        self.palette_ram = bytearray(PALETTE_SIZE_BYTES)
         self.nametable_mirror_pattern = cart.nametable_mirror_pattern
 
+    @lru_cache(maxsize=None)
     def decode_address(self, address):
-        if address < self.NAMETABLE_START:
+        if address < NAMETABLE_START:
             # pattern table - provided by the rom
             #return self._pattern_table, address
             return self.cart.chr_mem, address % len(self.cart.chr_mem)  # todo: need something better here via the read_ppu/wrtie_ppu in order to implement mappers
-        elif address < self.PALETTE_START:
+        elif address < PALETTE_START:
             # nametable
-            page = int((address - self.NAMETABLE_START) / self.NAMETABLE_LENGTH_BYTES)  # which nametable?
-            offset = (address - self.NAMETABLE_START) % self.NAMETABLE_LENGTH_BYTES  # offset in that table
+            page = int((address - NAMETABLE_START) / NAMETABLE_LENGTH_BYTES)  # which nametable?
+            offset = (address - NAMETABLE_START) % NAMETABLE_LENGTH_BYTES  # offset in that table
 
             # some of the pages (e.g. 2 and 3) are mirrored, so for these, find the underlying
             # namepage that they point to based on the mirror pattern
             true_page = self.nametable_mirror_pattern[page]
-            return self._nametables, true_page * self.NAMETABLE_LENGTH_BYTES + offset
+            return self._nametables, true_page * NAMETABLE_LENGTH_BYTES + offset
         else:
             # palette table
             if address == 0x3F10 or address == 0x3F14 or address == 0x3F18 or address == 0x3F1C:
                 # "addresses $3F10/$3F14/$3F18/$3F1C are mirrors of $3F00/$3F04/$3F08/$3F0C"
                 # (https://wiki.nesdev.com/w/index.php/PPU_palettes)
                 address -= 0x10
-            return self.palette_ram, address % self.PALETTE_SIZE_BYTES
+            return self.palette_ram, address % PALETTE_SIZE_BYTES
 
     def read(self, address):
         memory, address_decoded = self.decode_address(address)
         value = memory[address_decoded]
-        #logging.log(LOG_MEMORY, "read {:04X} [{:04X}]  (= {:02X})".format(address, address_decoded, value), extra={"source": "vram"})
         return value
 
     def write(self, address, value):
-        #logging.log(LOG_MEMORY, "write {:02X} --> {:04X}".format(value, address), extra={"source": "vram"})
         memory, address = self.decode_address(address)
         memory[address] = value

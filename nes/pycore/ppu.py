@@ -1,11 +1,86 @@
-import logging
-import time
+from nes.pycore.memory import NESVRAM, NAMETABLE_START, PALETTE_START, ATTRIBUTE_TABLE_OFFSET, NAMETABLE_LENGTH_BYTES
+from functools import lru_cache
 
-# import pyximport; pyximport.install()
+NUM_REGISTERS = 8
+OAM_SIZE_BYTES = 256
 
-from nes.pycore.memory import NESVRAM
-from nes.pycore.bitwise import bit_high, bit_low, set_bit, clear_bit, set_high_byte, set_low_byte
-#from nes import LOG_PPU
+# Register indices
+# (this is not just an enum, this is the offset of the register in the CPU memory map from 0x2000)
+PPU_CTRL = 0
+PPU_MASK = 1
+PPU_STATUS = 2
+OAM_ADDR = 3
+OAM_DATA = 4
+PPU_SCROLL = 5
+PPU_ADDR = 6
+PPU_DATA = 7
+
+# masks for the bits in ppu registers
+# ppu_status
+VBLANK_MASK =               0b10000000  # same for ppu_ctrl
+SPRITE0_HIT_MASK =          0b01000000
+SPRITE_OVERFLOW_MASK =      0b00100000
+
+# ppu_ctrl
+SPRITE_SIZE_MASK =          0b00100000
+BKG_PATTERN_TABLE_MASK =    0b00010000
+SPRITE_PATTERN_TABLE_MASK = 0b00001000
+VRAM_INCREMENT_MASK =       0b00000100
+NAMETABLE_MASK =            0b00000011
+
+# ppu_mask
+RENDERING_ENABLED_MASK =    0b00011000
+RENDER_SPRITES_MASK =       0b00010000
+RENDER_BACKGROUND_MASK =    0b00001000
+RENDER_LEFT8_SPRITES_MASK = 0b00000100
+RENDER_LEFT8_BKG_MASK =     0b00000010
+GREYSCALE_MASK =            0b00000001
+
+
+# bit numbers of some important bits in registers
+# ppu_status
+V_BLANK_BIT = 7             # same for ppu_ctrl
+
+# ppu mask
+RENDER_LEFT8_BKG_BIT = 1
+RENDER_LEFT8_SPRITES_BIT = 2
+
+# byte numbers in ppu scroll
+PPU_SCROLL_X = 0
+PPU_SCROLL_Y = 1
+
+# screen and sprite/tile sizes:
+PIXELS_PER_LINE = 341       # number of pixels per ppu scanline; only 256 of thes are visible
+SCREEN_HEIGHT_PX = 240      # visible screen height (number of visible rows)
+SCREEN_WIDTH_PX = 256       # visible screen width (number of visible pixels per row)
+TILE_HEIGHT_PX = int(8)          # height of a tile/standard sprite in pixels
+TILE_WIDTH_PX = int(8)           # width of tile/standard sprite in pixels
+SCREEN_TILE_ROWS = 30       # number of rows of background tiles in a single screen
+SCREEN_TILE_COLS = 32       # number of columns of tiles in a single screen
+PATTERN_BITS_PER_PIXEL = 2  # number of bits used to represent each pixel in the patterns
+
+# the total size of a tile in the pattern table in bytes (== 16)
+PATTERN_SIZE_BYTES = int(TILE_WIDTH_PX * TILE_HEIGHT_PX * PATTERN_BITS_PER_PIXEL / 8)
+
+# A NES rgb palette mapping from NES color values to RGB; others are possible.
+DEFAULT_NES_PALETTE = [
+    ( 82,  82,  82), (  1,  26,  81), ( 15,  15, 101), ( 35,   6,  99),
+    ( 54,   3,  75), ( 64,   4,  38), ( 63,   9,   4), ( 50,  19,   0),
+    ( 31,  32,   0), ( 11,  42,   0), (  0,  47,   0), (  0,  46,  10),
+    (  0,  38,  45), (  0,   0,   0), (  0,   0,   0), (  0,   0,   0),
+    (160, 160, 160), ( 30,  74, 157), ( 56,  55, 188), ( 88,  40, 184),
+    (117,  33, 148), (132,  35,  92), (130,  46,  36), (111,  63,   0),
+    ( 81,  82,   0), ( 49,  99,   0), ( 26, 107,   5), ( 14, 105,  46),
+    ( 16,  92, 104), (  0,   0,   0), (  0,   0,   0), (  0,   0,   0),
+    (254, 255, 255), (105, 158, 252), (137, 135, 255), (174, 118, 255),
+    (206, 109, 241), (224, 112, 178), (222, 124, 112), (200, 145,  62),
+    (166, 167,  37), (129, 186,  40), ( 99, 196,  70), ( 84, 193, 125),
+    ( 86, 179, 192), ( 60,  60,  60), (  0,   0,   0), (  0,   0,   0),
+    (254, 255, 255), (190, 214, 253), (204, 204, 255), (221, 196, 255),
+    (234, 192, 249), (242, 193, 223), (241, 199, 194), (232, 208, 170),
+    (217, 218, 157), (201, 226, 158), (188, 230, 174), (180, 229, 199),
+    (181, 223, 228), (169, 169, 169), (  0,   0,   0), (  0,   0,   0),
+]
 
 class NESPPU:
     """
@@ -23,86 +98,7 @@ class NESPPU:
         [6] Register behaviour: https://wiki.nesdev.com/w/index.php/PPU_registers
         [7] Scrolling: https://wiki.nesdev.com/w/index.php/PPU_scrolling
     """
-    NUM_REGISTERS = 8
-    OAM_SIZE_BYTES = 256
 
-    # Register indices
-    # (this is not just an enum, this is the offset of the register in the CPU memory map from 0x2000)
-    PPU_CTRL = 0
-    PPU_MASK = 1
-    PPU_STATUS = 2
-    OAM_ADDR = 3
-    OAM_DATA = 4
-    PPU_SCROLL = 5
-    PPU_ADDR = 6
-    PPU_DATA = 7
-
-    # masks for the bits in ppu registers
-    # ppu_status
-    VBLANK_MASK =               0b10000000  # same for ppu_ctrl
-    SPRITE0_HIT_MASK =          0b01000000
-    SPRITE_OVERFLOW_MASK =      0b00100000
-
-    # ppu_ctrl
-    SPRITE_SIZE_MASK =          0b00100000
-    BKG_PATTERN_TABLE_MASK =    0b00010000
-    SPRITE_PATTERN_TABLE_MASK = 0b00001000
-    VRAM_INCREMENT_MASK =       0b00000100
-    NAMETABLE_MASK =            0b00000011
-
-    # ppu_mask
-    RENDERING_ENABLED_MASK =    0b00011000
-    RENDER_SPRITES_MASK =       0b00010000
-    RENDER_BACKGROUND_MASK =    0b00001000
-    RENDER_LEFT8_SPRITES_MASK = 0b00000100
-    RENDER_LEFT8_BKG_MASK =     0b00000010
-    GREYSCALE_MASK =            0b00000001
-
-
-    # bit numbers of some important bits in registers
-    # ppu_status
-    V_BLANK_BIT = 7             # same for ppu_ctrl
-
-    # ppu mask
-    RENDER_LEFT8_BKG_BIT = 1
-    RENDER_LEFT8_SPRITES_BIT = 2
-
-    # byte numbers in ppu scroll
-    PPU_SCROLL_X = 0
-    PPU_SCROLL_Y = 1
-
-    # screen and sprite/tile sizes:
-    PIXELS_PER_LINE = 341       # number of pixels per ppu scanline; only 256 of thes are visible
-    SCREEN_HEIGHT_PX = 240      # visible screen height (number of visible rows)
-    SCREEN_WIDTH_PX = 256       # visible screen width (number of visible pixels per row)
-    TILE_HEIGHT_PX = int(8)          # height of a tile/standard sprite in pixels
-    TILE_WIDTH_PX = int(8)           # width of tile/standard sprite in pixels
-    SCREEN_TILE_ROWS = 30       # number of rows of background tiles in a single screen
-    SCREEN_TILE_COLS = 32       # number of columns of tiles in a single screen
-    PATTERN_BITS_PER_PIXEL = 2  # number of bits used to represent each pixel in the patterns
-
-    # the total size of a tile in the pattern table in bytes (== 16)
-    PATTERN_SIZE_BYTES = int(TILE_WIDTH_PX * TILE_HEIGHT_PX * PATTERN_BITS_PER_PIXEL / 8)
-
-    # A NES rgb palette mapping from NES color values to RGB; others are possible.
-    DEFAULT_NES_PALETTE = [
-        ( 82,  82,  82), (  1,  26,  81), ( 15,  15, 101), ( 35,   6,  99),
-        ( 54,   3,  75), ( 64,   4,  38), ( 63,   9,   4), ( 50,  19,   0),
-        ( 31,  32,   0), ( 11,  42,   0), (  0,  47,   0), (  0,  46,  10),
-        (  0,  38,  45), (  0,   0,   0), (  0,   0,   0), (  0,   0,   0),
-        (160, 160, 160), ( 30,  74, 157), ( 56,  55, 188), ( 88,  40, 184),
-        (117,  33, 148), (132,  35,  92), (130,  46,  36), (111,  63,   0),
-        ( 81,  82,   0), ( 49,  99,   0), ( 26, 107,   5), ( 14, 105,  46),
-        ( 16,  92, 104), (  0,   0,   0), (  0,   0,   0), (  0,   0,   0),
-        (254, 255, 255), (105, 158, 252), (137, 135, 255), (174, 118, 255),
-        (206, 109, 241), (224, 112, 178), (222, 124, 112), (200, 145,  62),
-        (166, 167,  37), (129, 186,  40), ( 99, 196,  70), ( 84, 193, 125),
-        ( 86, 179, 192), ( 60,  60,  60), (  0,   0,   0), (  0,   0,   0),
-        (254, 255, 255), (190, 214, 253), (204, 204, 255), (221, 196, 255),
-        (234, 192, 249), (242, 193, 223), (241, 199, 194), (232, 208, 170),
-        (217, 218, 157), (201, 226, 158), (188, 230, 174), (180, 229, 199),
-        (181, 223, 228), (169, 169, 169), (  0,   0,   0), (  0,   0,   0),
-    ]
 
     def __init__(self, cart=None, screen=None, interrupt_listener=None):
 
@@ -121,7 +117,7 @@ class NESPPU:
         self._io_latch = 0              # last write/valid read of the ppu registers, sometimes reflected in read status
 
         # internal latches used in background rendering
-        self._palette = [self.DEFAULT_NES_PALETTE[0:3], self.DEFAULT_NES_PALETTE[3:6]]     # 2 x palette latches
+        self._palette = [DEFAULT_NES_PALETTE[0:3], DEFAULT_NES_PALETTE[3:6]]     # 2 x palette latches
         self._pattern_lo = 0   # 16 bit patterns register to hold 2 x 8 bit patterns
         self._pattern_hi = 0   # 16 bit patterns register to hold 2 x 8 bit patterns
 
@@ -154,7 +150,7 @@ class NESPPU:
 
         # memory
         self.vram = NESVRAM(cart=cart)
-        self.oam = bytearray(self.OAM_SIZE_BYTES)
+        self.oam = bytearray(OAM_SIZE_BYTES)
 
         # screen attached to PPU
         self.screen = screen
@@ -163,7 +159,7 @@ class NESPPU:
         self.interrupt_listener = interrupt_listener
 
         # palette: use the default, but can be replaced using utils.load_palette
-        self.rgb_palette = self.DEFAULT_NES_PALETTE
+        self.rgb_palette = DEFAULT_NES_PALETTE
         self.transparent_color = self._get_non_palette_color()
         self._palette_cache = [[None] * 4, [None] * 4]
 
@@ -172,7 +168,7 @@ class NESPPU:
             self.screen.transparent_color = self.transparent_color
 
     def write_oam(self, data):
-        for i in range(self.OAM_SIZE_BYTES):
+        for i in range(OAM_SIZE_BYTES):
             self.oam[i] = data[i]
 
     def invalidate_palette_cache(self):
@@ -202,9 +198,9 @@ class NESPPU:
         The ppu status register value (without io latch noise in lower bits)
         :return:
         """
-        return self.VBLANK_MASK * self.in_vblank \
-               + self.SPRITE0_HIT_MASK * self.sprite_zero_hit \
-               + self.SPRITE_OVERFLOW_MASK * self.sprite_overflow
+        return VBLANK_MASK * self.in_vblank \
+               + SPRITE0_HIT_MASK * self.sprite_zero_hit \
+               + SPRITE_OVERFLOW_MASK * self.sprite_overflow
 
     def read_register(self, register):
         """
@@ -215,15 +211,15 @@ class NESPPU:
         of the PPU lines, which leads to some degree of "memory" on the lines, which will hold the last
         value written to a port (including read only ones), or the last value read from a read-only port
         """
-        if register == self.PPU_CTRL:
+        if register == PPU_CTRL:
             # write only
             print("WARNING: reading i/o latch")
             return self._io_latch
-        elif register == self.PPU_MASK:
+        elif register == PPU_MASK:
             # write only
             print("WARNING: reading i/o latch")
             return self._io_latch
-        elif register == self.PPU_STATUS:
+        elif register == PPU_STATUS:
             # clear ppu_scroll and ppu_addr latches
             self._ppu_byte_latch = 0   # this is a shared latch between scroll and addr
             #self._ppu_scroll_ix = 0   # ^^^^
@@ -231,25 +227,25 @@ class NESPPU:
             self.in_vblank = False  # clear vblank in ppu_status
             self._io_latch = v
             return v
-        elif register == self.OAM_ADDR:
+        elif register == OAM_ADDR:
             # write only
             print("WARNING: reading i/o latch")
             return self._io_latch
-        elif register == self.OAM_DATA:
+        elif register == OAM_DATA:
             # todo: does not properly implement the weird results of this read during rendering
             v = self.oam[self.oam_addr]
             self._io_latch = v
             return v
-        elif register == self.PPU_SCROLL:
+        elif register == PPU_SCROLL:
             # write only
             print("WARNING: reading i/o latch")
             return self._io_latch
-        elif register == self.PPU_ADDR:
+        elif register == PPU_ADDR:
             # write only
             print("WARNING: reading i/o latch")
             return self._io_latch
-        elif register == self.PPU_DATA:
-            if self.ppu_addr < self.vram.PALETTE_START:
+        elif register == PPU_DATA:
+            if self.ppu_addr < PALETTE_START:
                 v = self._ppu_data_buffer
                 self._ppu_data_buffer = self.vram.read(self.ppu_addr)
             else:
@@ -272,39 +268,39 @@ class NESPPU:
 
         value &= 0xFF  # can only write a byte here
 
-        if register == self.PPU_CTRL:
+        if register == PPU_CTRL:
             # write only
             # writes to ppu_ctrl are ignored at first
             if self.cycles_since_reset < 29658:
                 return
             # can trigger an immediate NMI if we are in vblank and the (allow) vblank NMI trigger flag is flipped high
             trigger_nmi = self.in_vblank \
-                          and (value & self.VBLANK_MASK) > 0 \
-                          and (self.ppu_ctrl & self.VBLANK_MASK) == 0
+                          and (value & VBLANK_MASK) > 0 \
+                          and (self.ppu_ctrl & VBLANK_MASK) == 0
             self.ppu_ctrl = value
             if trigger_nmi:
                 self._trigger_nmi()
-        elif register == self.PPU_MASK:
+        elif register == PPU_MASK:
             # write only
             self.ppu_mask = value
-        elif register == self.PPU_STATUS:
+        elif register == PPU_STATUS:
             # read only
             pass
-        elif register == self.OAM_ADDR:
+        elif register == OAM_ADDR:
             # write only
             self.oam_addr = value
-        elif register == self.OAM_DATA:
+        elif register == OAM_DATA:
             # read/write
             self.oam[self.oam_addr] = value
             # increment the OAM address and wrap around if necessary (wraps to start of page since OAM addr specifies
             # sub-page address)
             self.oam_addr = (self.oam_addr + 1) & 0xFF
-        elif register == self.PPU_SCROLL:
+        elif register == PPU_SCROLL:
             # write only
             self.ppu_scroll[self._ppu_byte_latch] = value
             # flip which byte is pointed to on each write; reset on ppu status read.  Latch shared with ppu_addr.
             self._ppu_byte_latch = 1 - self._ppu_byte_latch
-        elif register == self.PPU_ADDR:
+        elif register == PPU_ADDR:
             # write only
             # high byte first
             if self._ppu_byte_latch == 0:
@@ -313,7 +309,7 @@ class NESPPU:
                 # internal latch that is equivalent to this); see [7].  Some games, e.g. SMB, rely on this behaviour
                 self.ppu_ctrl = (self.ppu_ctrl & 0b11111100) + ((value & 0b00001100) >> 2)
                 # a write here also has a very unusual effect on the coarse and fine y scroll [7]
-                self.ppu_scroll[self.PPU_SCROLL_Y] = (self.ppu_scroll[self.PPU_SCROLL_Y] & 0b00111100) + \
+                self.ppu_scroll[PPU_SCROLL_Y] = (self.ppu_scroll[PPU_SCROLL_Y] & 0b00111100) + \
                                                      ((value & 0b00000011) << 6) + ((value & 0b00110000) >> 4)
             else:
                 self.ppu_addr = (self.ppu_addr & 0xFF00) + value
@@ -321,24 +317,24 @@ class NESPPU:
                 # here we just directly change the values of the scroll registers since they are write only and are used
                 # only for this (rather than accumulating in a different internal latch _t like shown in [7]).  I think
                 # that this is okay.
-                self.ppu_scroll[self.PPU_SCROLL_X] = (self.ppu_scroll[self.PPU_SCROLL_X] & 0b00000111) + ((value & 0b00011111) << 3)
-                self.ppu_scroll[self.PPU_SCROLL_Y] = (self.ppu_scroll[self.PPU_SCROLL_Y] & 0b11000111) + ((value & 0b11100000) >> 2)
+                self.ppu_scroll[PPU_SCROLL_X] = (self.ppu_scroll[PPU_SCROLL_X] & 0b00000111) + ((value & 0b00011111) << 3)
+                self.ppu_scroll[PPU_SCROLL_Y] = (self.ppu_scroll[PPU_SCROLL_Y] & 0b11000111) + ((value & 0b11100000) >> 2)
             # flip which byte is pointed to on each write; reset on ppu status read
             self._ppu_byte_latch = 1 - self._ppu_byte_latch
-        elif register == self.PPU_DATA:
+        elif register == PPU_DATA:
             # read/write
             self.vram.write(self.ppu_addr, value)
             self._increment_vram_address()
             # invalidate the palette cache if this is a write to the palette memory.  Could be more careful about what
             # is invalidated here so that potentially less recalculation is needed.
-            if self.ppu_addr >= self.vram.PALETTE_START:
+            if self.ppu_addr >= PALETTE_START:
                 self.invalidate_palette_cache()
 
     def _increment_vram_address(self):
         """
         Increment vram address after reads/writes by an amount specified by a value in ppu_ctrl
         """
-        self.ppu_addr += 1 if (self.ppu_ctrl & self.VRAM_INCREMENT_MASK) == 0 else 32
+        self.ppu_addr += 1 if (self.ppu_ctrl & VRAM_INCREMENT_MASK) == 0 else 32
 
     def _trigger_nmi(self):
         """
@@ -355,13 +351,13 @@ class NESPPU:
         # scan through the sprites, starting at oam_start_addr, seeing if they are visible in the line given
         # (note that should be the next line); if so, add them to the list of active sprites, until that gets full.
         # if using 8x16 sprites (True), or 8x8 sprite (False)
-        double_sprites = (self.ppu_ctrl & self.SPRITE_SIZE_MASK) > 0
+        double_sprites = (self.ppu_ctrl & SPRITE_SIZE_MASK) > 0
         sprite_height = 16 if double_sprites else 8
 
         self._active_sprites = []
         sprite_line = []
         for n in range(64):
-            addr = (self._oam_addr_held + n * 4) % self.OAM_SIZE_BYTES
+            addr = (self._oam_addr_held + n * 4) % OAM_SIZE_BYTES
             sprite_y = self.oam[addr]
             if sprite_y <= line < sprite_y + sprite_height:
                 self._active_sprites.append(addr)
@@ -381,15 +377,15 @@ class NESPPU:
         """
         Non cycle-correct way to pre-fetch the sprite lines for the next scanline
         """
-        table_base = ((self.ppu_ctrl & self.SPRITE_PATTERN_TABLE_MASK) > 0) * 0x1000
+        table_base = ((self.ppu_ctrl & SPRITE_PATTERN_TABLE_MASK) > 0) * 0x1000
 
         for i, address in enumerate(active_sprite_addrs):
             attribs = self.oam[(address + 2) & 0xFF]
             palette_ix = attribs & 0b00000011
             palette = self.decode_palette(palette_ix, is_sprite=True)
-            flip_v = bit_high(attribs, bit=7)
-            flip_h = bit_high(attribs, bit=6)
-            self._sprite_bkg_priority[i] = bit_high(attribs, bit=5)
+            flip_v = (attribs & (1 << 7) > 0)
+            flip_h = (attribs & (1 << 6) > 0)
+            self._sprite_bkg_priority[i] = (attribs & (1 << 5) > 0)
 
             if not double_sprites:
                 tile_ix = self.oam[(address + 1) & 0xFF]
@@ -402,12 +398,12 @@ class NESPPU:
                     tile_ix += 1
                     line -= 8
 
-            tile_base = table_base + tile_ix * self.PATTERN_SIZE_BYTES
+            tile_base = table_base + tile_ix * PATTERN_SIZE_BYTES
             sprite_pattern_lo = self.vram.read(tile_base + line)
             sprite_pattern_hi = self.vram.read(tile_base + 8 + line)
 
             for x in range(8):
-                c = bit_high(sprite_pattern_hi, x) * 2 + bit_high(sprite_pattern_lo, x)
+                c = (sprite_pattern_hi & (1 << x) > 0) * 2 + (sprite_pattern_lo & (1 << x) > 0)
                 self._sprite_pattern[i][x if flip_h else 7 - x] = palette[c] if c else None
 
             #print(self.line, i, sprite_line[i], self._sprite_pattern[i], self.oam[address + 3], self._sprite_bkg_priority[i])
@@ -417,8 +413,8 @@ class NESPPU:
         Cycle-correct (ish) sprite rendering for the pixel at y=line, pixel=pixel.  Includes sprite 0 collision detection.
         """
         c_out = bkg_pixel
-        if (self.ppu_mask & self.RENDER_SPRITES_MASK) == 0 \
-            or (self.pixel - 1 < 8 and bit_low(self.ppu_mask, self.RENDER_LEFT8_SPRITES_BIT)):
+        if (self.ppu_mask & RENDER_SPRITES_MASK) == 0 \
+            or (self.pixel - 1 < 8 and (self.ppu_mask & (1 << RENDER_LEFT8_SPRITES_BIT) == 0)):
             return c_out
 
         sprite_c_out, top_sprite = None, None
@@ -454,65 +450,67 @@ class NESPPU:
         # cycles correspond to screen pixels during the screen-drawing phase of the ppu
         # there are three ppu cycles per cpu cycles, at least on NTSC systems
         frame_ended = False
-        for cyc in range(num_cycles):
+        for _ in range(num_cycles):
             # current scanline of the frame we are on - this determines behaviour during the line
-            if self.line <= 239 and (self.ppu_mask & self.RENDERING_ENABLED_MASK) > 0:
+            pixel = self.pixel
+            line = self.line
+            if line <= 239 and (self.ppu_mask & RENDERING_ENABLED_MASK) > 0:
                 # visible scanline
-                if 0 < self.pixel <= 256:  # pixels 1 - 256
+                if 0 < pixel <= 256:  # pixels 1 - 256
                     # render pixel - 1
-                    if (self.pixel - 1) % 8 == 0 and self.pixel > 1:
+                    if (pixel - 1) % 8 == 0 and pixel > 1:
                         # fill background data latches
                         # todo: this is not cycle-correct, since the read is done atomically at the eighth pixel rather than throughout the cycle.
                         self.shift_bkg_latches()  # move the data from the upper latches into the current ones
-                        self.fill_bkg_latches(self.line, self.col + 1)   # get some more data for the upper latches
+                        self.fill_bkg_latches(line, self.col + 1)   # get some more data for the upper latches
 
                     # render background from latches
                     bkg_pixel = self._get_bkg_pixel()
                     # overlay srpite from latches
                     final_pixel = self._overlay_sprites(bkg_pixel)
                     if final_pixel != self.transparent_color:
-                        self.screen.write_at(x=self.pixel - 1, y=self.line, color=final_pixel)
+                        self.screen.write_at(x=pixel - 1, y=line, color=final_pixel)
                     #self.shift_bkg_latches()
-                elif self.pixel == 257:   # pixels 257 - 320
+                elif pixel == 257:   # pixels 257 - 320
                     # sprite data fetching: fetch data from OAM for sprites on the next scanline
                     # NOTE:  "evaluation applies to the next line's sprite rendering, ... and this is why
                     # there is a 1 line offset on a sprite's Y coordinate."
                     # source: https://wiki.nesdev.com/w/index.php/PPU_sprite_evaluation  (note 1)
                     # this is implemented by passing line + 1 - 1 == line to the prefetch function for next line
-                    self._prefetch_active_sprites(self.line)
-                elif 321 <= self.pixel <= 336:   # pixels 321 - 336
+                    self._prefetch_active_sprites(line)
+                elif 321 <= pixel <= 336:   # pixels 321 - 336
                     # fill background data latches with data for first two tiles of next scanline
-                    if self.pixel % 8 == 1:  # will happen at 321 and 329
+                    if pixel % 8 == 1:  # will happen at 321 and 329
                         # fill latches
                         self.shift_bkg_latches()  # move the data from the upper latches into the current ones
-                        self.fill_bkg_latches(self.line + 1, int((self.pixel - 321) / 8))  # get some more data for the upper latches
+                        self.fill_bkg_latches(line + 1, int((pixel - 321) / 8))  # get some more data for the upper latches
                     #self.shift_bkg_latches()
                 else:  # pixels 337 - 340
                     # todo: unknown nametable fetches (used by MMC5)
                     pass
 
-            if self.line == 0 and self.pixel == 65:
+            if line == 0 and pixel == 65:
                 # The OAM address is fixed after this point  [citation needed]
                 self._oam_addr_held = self.oam_addr
-            elif self.line == 240 and self.pixel == 0:
+            elif line == 240 and pixel == 0:
                 # post-render scanline, ppu is idle
                 pass
-            elif self.line == 241 and self.pixel == 1:
+            elif line == 241 and pixel == 1:
                 # set vblank flag
                 self.in_vblank = True   # set the vblank flag in ppu_status register
                 # trigger NMI (if NMI is enabled)
-                if (self.ppu_ctrl & self.VBLANK_MASK) > 0:
+                if (self.ppu_ctrl & VBLANK_MASK) > 0:
                     self._trigger_nmi()
-            elif 241 <= self.line <= 260:
+            elif 241 <= line <= 260:
                 # during vblank, ppu does no memory accesses; most of the CPU accesses happens here
                 pass
-            elif self.line == 261:
+            elif line == 261:
                 # pre-render scanline for next frame; at dot 1, reset vblank flag in ppu_status
-                if self.pixel == 1:
+                if pixel == 1:
                     self.in_vblank = False
                     self.sprite_zero_hit = False
                     self.sprite_overflow = False
-                elif self.pixel == 257:
+                elif pixel == 257:
                     # load sprite data for next scanline
                     # self._prefetch_active_sprites(line=0)
                     # "Sprite evaluation does not happen on the pre-render scanline. Because evaluation applies to the
@@ -520,13 +518,13 @@ class NESPPU:
                     # there is a 1 line offset on a sprite's Y coordinate."
                     # source: https://wiki.nesdev.com/w/index.php/PPU_sprite_evaluation  (note 1)
                     self._active_sprites = []
-                elif 321 <= self.pixel <= 336:
+                elif 321 <= pixel <= 336:
                     # load data for next scanline
-                    if self.pixel % 8 == 1:  # will happen at 321 and 329
+                    if pixel % 8 == 1:  # will happen at 321 and 329
                         # fill latches
                         self.shift_bkg_latches()  # move the data from the upper latches into the current ones
-                        self.fill_bkg_latches(line=0, col=int((self.pixel - 321) / 8))  # get some more data for the upper latches
-                elif self.pixel == self.PIXELS_PER_LINE - 1 - self.frames_since_reset % 2:
+                        self.fill_bkg_latches(line=0, col=int((pixel - 321) / 8))  # get some more data for the upper latches
+                elif pixel == PIXELS_PER_LINE - 1 - self.frames_since_reset % 2:
                     # this is the last pixel in the frame, so trigger the end-of-frame
                     # (do it below all the counter updates below, though)
                     frame_ended=True
@@ -536,7 +534,7 @@ class NESPPU:
             self.pixel += 1
             if self.pixel > 1 and self.pixel % 8 == 1:
                 self.col += 1
-            if self.pixel >= self.PIXELS_PER_LINE:
+            if self.pixel >= PIXELS_PER_LINE:
                 self.line += 1
                 self.pixel = 0
                 self.col = 0
@@ -559,29 +557,29 @@ class NESPPU:
         row = int(line / 8)
 
         # x and y coords of the nametable
-        nx0 = bit_high(self.ppu_ctrl, 0)
-        ny0 = bit_high(self.ppu_ctrl, 1)
+        nx0 = (self.ppu_ctrl & (1 << 0) > 0)
+        ny0 = (self.ppu_ctrl & (1 << 1) > 0)
 
-        total_row = (row + ny0 * self.SCREEN_TILE_ROWS + ((self.ppu_scroll[self.PPU_SCROLL_Y] & 0b11111000) >> 3)) % (2 * self.SCREEN_TILE_ROWS)
-        total_col = (col + nx0 * self.SCREEN_TILE_COLS + ((self.ppu_scroll[self.PPU_SCROLL_X] & 0b11111000) >> 3)) % (2 * self.SCREEN_TILE_COLS)
+        total_row = (row + ny0 * SCREEN_TILE_ROWS + ((self.ppu_scroll[PPU_SCROLL_Y] & 0b11111000) >> 3)) % (2 * SCREEN_TILE_ROWS)
+        total_col = (col + nx0 * SCREEN_TILE_COLS + ((self.ppu_scroll[PPU_SCROLL_X] & 0b11111000) >> 3)) % (2 * SCREEN_TILE_COLS)
 
-        ny = int(total_row / self.SCREEN_TILE_ROWS)
-        nx = int(total_col / self.SCREEN_TILE_COLS)
+        ny = int(total_row / SCREEN_TILE_ROWS)
+        nx = int(total_col / SCREEN_TILE_COLS)
 
-        tile_row = total_row - ny * self.SCREEN_TILE_ROWS
-        tile_col = total_col - nx * self.SCREEN_TILE_COLS
+        tile_row = total_row - ny * SCREEN_TILE_ROWS
+        tile_col = total_col - nx * SCREEN_TILE_COLS
 
-        ntbl_base = self.vram.NAMETABLE_START + (ny * 2 + nx) * self.vram.NAMETABLE_LENGTH_BYTES
-        tile_addr = ntbl_base + tile_row * self.SCREEN_TILE_COLS + tile_col
+        ntbl_base = NAMETABLE_START + (ny * 2 + nx) * NAMETABLE_LENGTH_BYTES
+        tile_addr = ntbl_base + tile_row * SCREEN_TILE_COLS + tile_col
 
         tile_index = self.vram.read(tile_addr)
 
-        tile_bank = (self.ppu_ctrl & self.BKG_PATTERN_TABLE_MASK) > 0
+        tile_bank = (self.ppu_ctrl & BKG_PATTERN_TABLE_MASK) > 0
         table_base = tile_bank * 0x1000
-        tile_base = table_base + tile_index * self.PATTERN_SIZE_BYTES
+        tile_base = table_base + tile_index * PATTERN_SIZE_BYTES
 
         attribute_byte = self.vram.read(ntbl_base
-                                        + self.vram.ATTRIBUTE_TABLE_OFFSET
+                                        + ATTRIBUTE_TABLE_OFFSET
                                         + (int(tile_row / 4) * 8 + int(tile_col / 4))
                                         )
 
@@ -594,19 +592,19 @@ class NESPPU:
 
         tile_line = line - 8 * row
 
-        self._pattern_lo = set_low_byte(self._pattern_lo, self.vram.read(tile_base + tile_line))
-        self._pattern_hi = set_low_byte(self._pattern_hi, self.vram.read(tile_base + tile_line + 8))
+        self._pattern_lo = (self._pattern_lo & 0xFF00) + self.vram.read(tile_base + tile_line)
+        self._pattern_hi = (self._pattern_hi & 0xFF00) + self.vram.read(tile_base + tile_line + 8)
 
     def shift_bkg_latches(self):
         self._pattern_hi <<= 8
         self._pattern_lo <<= 8
 
     def _get_bkg_pixel(self):
-        if (   self.ppu_mask & self.RENDER_BACKGROUND_MASK) == 0 \
-            or (self.pixel - 1 < 8 and bit_low(self.ppu_mask, self.RENDER_LEFT8_BKG_BIT)):
+        if (   self.ppu_mask & RENDER_BACKGROUND_MASK) == 0 \
+            or (self.pixel - 1 < 8 and (self.ppu_mask & (1 << RENDER_LEFT8_BKG_BIT) == 0)):
             return self.transparent_color
 
-        fine_x = self.ppu_scroll[self.PPU_SCROLL_X] & 0b00000111
+        fine_x = self.ppu_scroll[PPU_SCROLL_X] & 0b00000111
         px = (self.pixel - 1) % 8 + fine_x
         mask = 1 << (15 - px)
         v = ((self._pattern_lo & mask) > 0) + ((self._pattern_hi & mask) > 0) * 2
@@ -651,7 +649,7 @@ class NESPPU:
         # get the palette colours (these are in hue (chroma) / value (luma) format.)
         # palette_id is in range 0..3, and gives an offset into one of the four background palettes,
         # each of which consists of three colors, each of which is represented by a singe byte
-        palette_address = self.vram.PALETTE_START + 16 * is_sprite + 4 * palette_id
+        palette_address = PALETTE_START + 16 * is_sprite + 4 * palette_id
         palette = []
         for i in range(4):
             palette.append(self.rgb_palette[self.vram.read(palette_address + i) & 0b00111111])
