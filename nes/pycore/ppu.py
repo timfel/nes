@@ -522,7 +522,7 @@ class NESPPU:
                     if pixel % 8 == 1:  # will happen at 321 and 329
                         # fill latches
                         self.shift_bkg_latches()  # move the data from the upper latches into the current ones
-                        self.fill_bkg_latches(line=0, col=int((pixel - 321) / 8))  # get some more data for the upper latches
+                        self.fill_bkg_latches(line=0, col=((pixel - 321) // 8))  # get some more data for the upper latches
                 elif pixel == 341 - 1 - self.frames_since_reset % 2:
                     # this is the last pixel in the frame, so trigger the end-of-frame
                     # (do it below all the counter updates below, though)
@@ -571,16 +571,16 @@ class NESPPU:
 
         tile_index = self.vram.read(tile_addr)
 
-        tile_bank = (self.ppu_ctrl & 16) > 0
+        tile_bank = (self.ppu_ctrl & 0b00010000) > 0
         table_base = tile_bank * 0x1000
         tile_base = table_base + tile_index * PATTERN_SIZE_BYTES
 
         attribute_byte = self.vram.read(ntbl_base
-                                        + ATTRIBUTE_TABLE_OFFSET
-                                        + (int(tile_row / 4) * 8 + int(tile_col / 4))
+                                        + 0x3C0
+                                        + ((tile_row // 4) * 8 + (tile_col // 4))
                                         )
 
-        shift = 4 * (int(tile_row / 2) % 2) + 2 * (int(tile_col / 2) % 2)
+        shift = 4 * ((tile_row // 2) % 2) + 2 * ((tile_col // 2) % 2)
         mask = 0b00000011 << shift
         palette_id = (attribute_byte & mask) >> shift
 
@@ -605,7 +605,10 @@ class NESPPU:
         px = (self.pixel - 1) % 8 + fine_x
         mask = 1 << (15 - px)
         v = ((self._pattern_lo & mask) > 0) + ((self._pattern_hi & mask) > 0) * 2
-        return self._palette[px // 8][v] if v > 0 else self.transparent_color
+        if v > 0:
+            return self._palette[px // 8][v]
+        else:
+            return self.transparent_color
 
     def log_line(self):
         log = "{:5d}, {:3d}, {:3d}   ".format(self.frames_since_reset, self.line, self.pixel)
@@ -646,7 +649,7 @@ class NESPPU:
         # get the palette colours (these are in hue (chroma) / value (luma) format.)
         # palette_id is in range 0..3, and gives an offset into one of the four background palettes,
         # each of which consists of three colors, each of which is represented by a singe byte
-        palette_address = PALETTE_START + 16 * is_sprite + 4 * palette_id
+        palette_address = 0x3F00 + 16 * is_sprite + 4 * palette_id
         palette = []
         for i in range(4):
             palette.append(self.rgb_palette[self.vram.read(palette_address + i) & 0b00111111])

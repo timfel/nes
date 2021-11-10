@@ -1,6 +1,3 @@
-import logging
-from typing import Union
-
 from nes.instructions import INSTRUCTION_SET, PyNamedInstruction, AddressModes
 
 # Masks for the bits in the status register
