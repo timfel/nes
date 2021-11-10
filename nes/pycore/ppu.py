@@ -1,5 +1,4 @@
 from nes.pycore.memory import NESVRAM, NAMETABLE_START, PALETTE_START, ATTRIBUTE_TABLE_OFFSET, NAMETABLE_LENGTH_BYTES
-from functools import lru_cache
 
 NUM_REGISTERS = 8
 OAM_SIZE_BYTES = 256
@@ -213,11 +212,11 @@ class NESPPU:
         """
         if register == PPU_CTRL:
             # write only
-            print("WARNING: reading i/o latch")
+            raise ValueError("Cannot read from PPU_CTRL")
             return self._io_latch
         elif register == PPU_MASK:
             # write only
-            print("WARNING: reading i/o latch")
+            raise ValueError("Cannot read from PPU_MASK")
             return self._io_latch
         elif register == PPU_STATUS:
             # clear ppu_scroll and ppu_addr latches
@@ -229,7 +228,7 @@ class NESPPU:
             return v
         elif register == OAM_ADDR:
             # write only
-            print("WARNING: reading i/o latch")
+            raise ValueError("Cannot read from OAM_ADDR")
             return self._io_latch
         elif register == OAM_DATA:
             # todo: does not properly implement the weird results of this read during rendering
@@ -238,11 +237,11 @@ class NESPPU:
             return v
         elif register == PPU_SCROLL:
             # write only
-            print("WARNING: reading i/o latch")
+            raise ValueError("Cannot read from PPU_SCROLL")
             return self._io_latch
         elif register == PPU_ADDR:
             # write only
-            print("WARNING: reading i/o latch")
+            raise ValueError("Cannot read from PPU_ADDR")
             return self._io_latch
         elif register == PPU_DATA:
             if self.ppu_addr < PALETTE_START:
@@ -454,7 +453,7 @@ class NESPPU:
             # current scanline of the frame we are on - this determines behaviour during the line
             pixel = self.pixel
             line = self.line
-            if line <= 239 and (self.ppu_mask & RENDERING_ENABLED_MASK) > 0:
+            if line <= 239 and (self.ppu_mask & 0b00011000) > 0:  # if rendering is enabled
                 # visible scanline
                 if 0 < pixel <= 256:  # pixels 1 - 256
                     # render pixel - 1
@@ -499,7 +498,7 @@ class NESPPU:
                 # set vblank flag
                 self.in_vblank = True   # set the vblank flag in ppu_status register
                 # trigger NMI (if NMI is enabled)
-                if (self.ppu_ctrl & VBLANK_MASK) > 0:
+                if (self.ppu_ctrl & 0b10000000) > 0:  # if vblank nmi is enabled
                     self._trigger_nmi()
             elif 241 <= line <= 260:
                 # during vblank, ppu does no memory accesses; most of the CPU accesses happens here
@@ -524,7 +523,7 @@ class NESPPU:
                         # fill latches
                         self.shift_bkg_latches()  # move the data from the upper latches into the current ones
                         self.fill_bkg_latches(line=0, col=int((pixel - 321) / 8))  # get some more data for the upper latches
-                elif pixel == PIXELS_PER_LINE - 1 - self.frames_since_reset % 2:
+                elif pixel == 341 - 1 - self.frames_since_reset % 2:
                     # this is the last pixel in the frame, so trigger the end-of-frame
                     # (do it below all the counter updates below, though)
                     frame_ended=True
@@ -534,7 +533,7 @@ class NESPPU:
             self.pixel += 1
             if self.pixel > 1 and self.pixel % 8 == 1:
                 self.col += 1
-            if self.pixel >= PIXELS_PER_LINE:
+            if self.pixel >= 341:
                 self.line += 1
                 self.pixel = 0
                 self.col = 0
@@ -552,27 +551,27 @@ class NESPPU:
         """
         # todo: optimization - a lot of this can be precalculated once and then invalidated if anything changes, since that might only happen once per frame (or never)
         # get the tile from the nametable
-        row = int(line / 8)
+        row = line // 8
 
         # x and y coords of the nametable
         nx0 = (self.ppu_ctrl & (1 << 0) > 0)
         ny0 = (self.ppu_ctrl & (1 << 1) > 0)
 
-        total_row = (row + ny0 * SCREEN_TILE_ROWS + ((self.ppu_scroll[PPU_SCROLL_Y] & 0b11111000) >> 3)) % (2 * SCREEN_TILE_ROWS)
-        total_col = (col + nx0 * SCREEN_TILE_COLS + ((self.ppu_scroll[PPU_SCROLL_X] & 0b11111000) >> 3)) % (2 * SCREEN_TILE_COLS)
+        total_row = (row + ny0 * 30 + ((self.ppu_scroll[1] & 0b11111000) >> 3)) % (2 * 30)
+        total_col = (col + nx0 * 32 + ((self.ppu_scroll[0] & 0b11111000) >> 3)) % (2 * 32)
 
-        ny = int(total_row / SCREEN_TILE_ROWS)
-        nx = int(total_col / SCREEN_TILE_COLS)
+        ny = total_row // 30
+        nx = total_col // 32
 
-        tile_row = total_row - ny * SCREEN_TILE_ROWS
-        tile_col = total_col - nx * SCREEN_TILE_COLS
+        tile_row = total_row - ny * 30
+        tile_col = total_col - nx * 32
 
-        ntbl_base = NAMETABLE_START + (ny * 2 + nx) * NAMETABLE_LENGTH_BYTES
-        tile_addr = ntbl_base + tile_row * SCREEN_TILE_COLS + tile_col
+        ntbl_base = 0x2000 + (ny * 2 + nx) * 1024
+        tile_addr = ntbl_base + tile_row * 32 + tile_col
 
         tile_index = self.vram.read(tile_addr)
 
-        tile_bank = (self.ppu_ctrl & BKG_PATTERN_TABLE_MASK) > 0
+        tile_bank = (self.ppu_ctrl & 16) > 0
         table_base = tile_bank * 0x1000
         tile_base = table_base + tile_index * PATTERN_SIZE_BYTES
 
@@ -598,11 +597,11 @@ class NESPPU:
         self._pattern_lo <<= 8
 
     def _get_bkg_pixel(self):
-        if (   self.ppu_mask & RENDER_BACKGROUND_MASK) == 0 \
-            or (self.pixel - 1 < 8 and (self.ppu_mask & (1 << RENDER_LEFT8_BKG_BIT) == 0)):
+        if (   self.ppu_mask & 0b00001000) == 0 \
+            or (self.pixel - 1 < 8 and (self.ppu_mask & (1 << 1) == 0)):
             return self.transparent_color
 
-        fine_x = self.ppu_scroll[PPU_SCROLL_X] & 0b00000111
+        fine_x = self.ppu_scroll[0] & 0b00000111
         px = (self.pixel - 1) % 8 + fine_x
         mask = 1 << (15 - px)
         v = ((self._pattern_lo & mask) > 0) + ((self._pattern_hi & mask) > 0) * 2

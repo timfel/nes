@@ -1,4 +1,5 @@
 import logging
+from typing import Union
 
 from nes.instructions import INSTRUCTION_SET, PyNamedInstruction, AddressModes
 
@@ -127,7 +128,7 @@ class MOS6502:
         self.cycles_since_reset = 7
 
 
-    def _make_bytecode_dict(self):
+    def _make_bytecode_dict(self) -> list[PyNamedInstruction]:
         """
         Translates the instruction sets into a bytecode->instr dictionary and links the instruction opcodes
         to the functions in this object that execute them (this is done by instruction name).
@@ -264,7 +265,7 @@ class MOS6502:
         :param data: two-byte little endian array
         :return: an integer in the range 0-65535
         """
-        return (data[HI_BYTE] << 8) + data[LO_BYTE]
+        return (data[1] << 8) + data[0]
 
     def _read_word(self, addr, wrap_at_page=False):
         """
@@ -356,15 +357,15 @@ class MOS6502:
             elif instr.mode == AddressModes.ZEROPAGE_Y:
                 address = (data[0] + self.Y) & 0xFF
             elif instr.mode == AddressModes.ABSOLUTE:
-                address = (data[HI_BYTE] << 8) + data[LO_BYTE]
+                address = (data[1] << 8) + data[0]
             elif instr.mode == AddressModes.ABSOLUTE_X:
-                address = ((data[HI_BYTE] << 8) + data[LO_BYTE] + self.X) & 0xFFFF
-                if data[LO_BYTE] + self.X > 0xFF and instr.cycles > int(instr.cycles):
+                address = ((data[1] << 8) + data[0] + self.X) & 0xFFFF
+                if data[0] + self.X > 0xFF and instr.cycles > int(instr.cycles):
                     # extra cycles if cross the page boundary
                     extra_cycles += 1
             elif instr.mode == AddressModes.ABSOLUTE_Y:
-                address = ((data[HI_BYTE] << 8) + data[LO_BYTE] + self.Y) & 0xFFFF
-                if data[LO_BYTE] + self.Y > 0xFF and instr.cycles > int(instr.cycles):
+                address = ((data[1] << 8) + data[0] + self.Y) & 0xFFFF
+                if data[0] + self.Y > 0xFF and instr.cycles > int(instr.cycles):
                     # extra cycles if cross the page boundary
                     extra_cycles += 1
             elif instr.mode == AddressModes.INDIRECT:
@@ -372,7 +373,7 @@ class MOS6502:
                 # has the jump indirect bug [12] which means it cannot cross page boundaries and instead
                 # wraps around, e.g. read from 0x12ff reads 0x12ff and 0x1200
                 #address =
-                address = self._read_word((data[HI_BYTE] << 8) + data[LO_BYTE], wrap_at_page=True)
+                address = self._read_word((data[1] << 8) + data[0], wrap_at_page=True)
                 #address = self._from_le(self.memory.read_block(self._from_le(data), bytes=2))
             elif instr.mode == AddressModes.INDIRECT_X:
                 address = self._read_word((data[0] + self.X) & 0xFF, wrap_at_page=True)
@@ -386,13 +387,11 @@ class MOS6502:
             arg = address
 
         add_cycles = instr.function(arg, immediate)
-        extra_cycles += add_cycles if add_cycles else 0
+        if add_cycles:
+            extra_cycles += add_cycles
 
         # update cycle count
         self.cycles_since_reset += int(instr.cycles) + extra_cycles
-
-        # logging
-        #logging.log(LOG_CPU, self.log_line(), extra={"source": "CPU"})
 
         return int(instr.cycles) + extra_cycles
 
@@ -874,7 +873,10 @@ class MOS6502:
         Bitwise OR with accumulator; result put into accumulator.
         :return:
         """
-        v = self.memory.read(arg) if not immediate else arg
+        if not immediate:
+            v = self.memory.read(arg)
+        else:
+            v = arg
         self.A = self.A | v
         self._set_zn(self.A)
 
