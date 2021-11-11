@@ -412,8 +412,10 @@ class NESPPU:
         Cycle-correct (ish) sprite rendering for the pixel at y=line, pixel=pixel.  Includes sprite 0 collision detection.
         """
         c_out = bkg_pixel
-        if (self.ppu_mask & RENDER_SPRITES_MASK) == 0 \
-            or (self.pixel - 1 < 8 and (self.ppu_mask & (1 << RENDER_LEFT8_SPRITES_BIT) == 0)):
+        ppu_mask = self.ppu_mask
+        pixel = self.pixel
+        if (ppu_mask & 0b00010000) == 0 \
+            or (pixel - 1 < 8 and (ppu_mask & (1 << 2) == 0)):
             return c_out
 
         sprite_c_out, top_sprite = None, None
@@ -422,9 +424,9 @@ class NESPPU:
             # render in reverse to make overwriting easier
             sprite_addr = self._active_sprites[i]
             sprite_x = self.oam[sprite_addr + 3]
-            if sprite_x <= self.pixel - 1 < sprite_x + 8:
+            if sprite_x <= pixel - 1 < sprite_x + 8:
                 #print(self.line, i, sprite_x, sprite_addr, self._sprite_bkg_priority[i])
-                pix = self.pixel - 1 - sprite_x
+                pix = pixel - 1 - sprite_x
                 # this sprite is visible now
                 c = self._sprite_pattern[i][pix]
                 if c:

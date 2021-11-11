@@ -92,30 +92,30 @@ class NESMappedRAM(MemoryBase):
         """
         Read one byte of memory from the NES address space
         """
-        if address < 0x0800:    # RAM and its mirrors
-            value = self.ram[address % 0x800] # RAM_SIZE
-        elif address < 0x0800:  # PPU registers
-            register_ix = address % 8 # NUM_PPU_REGISTERS
+        if address < RAM_END:    # RAM and its mirrors
+            value = self.ram[address % RAM_SIZE]
+        elif address < PPU_END:  # PPU registers
+            register_ix = address % NUM_PPU_REGISTERS
             if self.ppu is not None:
                 value = self.ppu.read_register(register_ix)
             else:
                 value = 0
-        elif address < 0x4018:
-            if address == 0x4014 and self.ppu:
+        elif address < APU_END:
+            if address == OAM_DMA and self.ppu:
                 # write only
                 value = 0
-            elif address == 0x4016:  # controller 1
+            elif address == CONTROLLER1:
                 value = (self.controller1.read_bit() & 0b00011111) + (0x40 & 0b11100000)
                 #print("{:08b}".format(value))
                 #print("{:08b}".format(self._last_bus))
                 # todo: deal with open bus behaviour of upper control lines
-            elif address == 0x4017:  # controller 2
+            elif address == CONTROLLER2:
                 # todo: deal with open bus behaviour of upper control lines
                 value = (self.controller2.read_bit() & 0b00011111) + (0x40 & 0b11100000)
             else:
                 # todo: APU registers
                 value = 0
-        elif address < 0x4020:  # APU END
+        elif address < APU_UNUSED_END:
             # todo: generally unused APU and I/O functionality
             value = 0
         else:
@@ -218,10 +218,10 @@ class NESVRAM(MemoryBase):
         if address < NAMETABLE_START:
             # pattern table - provided by the rom
             #return self._pattern_table, address
-            return self.cart.chr_mem, address % len(self.cart.chr_mem)  # todo: need something better here via the read_ppu/write_ppu in order to implement mappers
+            return self.cart.chr_mem, address % len(self.cart.chr_mem)  # todo: need something better here via the read_ppu/wrtie_ppu in order to implement mappers
         elif address < PALETTE_START:
             # nametable
-            page = (address - NAMETABLE_START) // NAMETABLE_LENGTH_BYTES  # which nametable?
+            page = int((address - NAMETABLE_START) / NAMETABLE_LENGTH_BYTES)  # which nametable?
             offset = (address - NAMETABLE_START) % NAMETABLE_LENGTH_BYTES  # offset in that table
 
             # some of the pages (e.g. 2 and 3) are mirrored, so for these, find the underlying
@@ -236,6 +236,7 @@ class NESVRAM(MemoryBase):
                 address -= 0x10
             return self.palette_ram, address % PALETTE_SIZE_BYTES
 
+    @lru_cache
     def read(self, address):
         memory, address_decoded = self.decode_address(address)
         value = memory[address_decoded]
@@ -244,4 +245,4 @@ class NESVRAM(MemoryBase):
     def write(self, address, value):
         memory, address = self.decode_address(address)
         memory[address] = value
-
+        self.read.cache_clear()
