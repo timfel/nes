@@ -9,6 +9,12 @@ except ImportError:
     has_pygame = False
 
 try:
+    import numpy as np
+    has_numpy = True
+except ImportError:
+    has_numpy = False
+
+try:
     from OpenGL.GL import *
     has_opengl = True
 except ImportError:
@@ -81,10 +87,6 @@ class Screen(ScreenBase):
         pygame.freetype.init()
         self.font = pygame.freetype.SysFont(pygame.font.get_default_font(), 12 * self.scale)
 
-    def write_at(self, x, y, color):
-        # only used in py_compatibility_mode
-        self.buffer_surf.set_at((x, y), color)
-
     def add_text(self, text, position, color, ttl=1):
         self._text_buffer.append((text, (position[0], position[1]), color, ttl))
 
@@ -94,8 +96,29 @@ class Screen(ScreenBase):
 
     def show(self):
         if not self.py_compatibility_mode:
-            # the old version of the ppu wrote directly to the screen via write_at
             self.ppu.copy_screen_buffer_to(self.buffer_sa, self.vertical_overscan, self.horizontal_overscan)
+        else:
+            horizontal_overscan_px = (self.WIDTH_PX - self.VISIBLE_WIDTH_PX) >> 1
+            vertical_overscan_px = (self.HEIGHT_PX - self.VISIBLE_HEIGHT_PX) >> 1
+            start_line = vertical_overscan_px
+            end_line = self.HEIGHT_PX - vertical_overscan_px
+            start_column = horizontal_overscan_px
+            end_column = self.WIDTH_PX - horizontal_overscan_px
+            if self.vertical_overscan:
+                start_line = 0
+                end_line = self.HEIGHT_PX
+            if self.horizontal_overscan:
+                start_column = 0
+                end_column = self.WIDTH_PX
+            if has_numpy:
+                src = np.frombuffer(self.ppu.screen_buffer, dtype="uint8").reshape(self.WIDTH_PX, self.HEIGHT_PX, 3)
+                pygame.surfarray.blit_array(self.buffer_surf, src[start_column:end_column, start_line:end_line, :])
+            else:
+                offset = ((start_column * self.HEIGHT_PX) + start_line) * 3
+                for y in range(self.height):
+                    for x in range(self.width):
+                        self.buffer_surf.set_at((x, y), self.ppu.screen_buffer[offset:offset + 3])
+                        offset += 3
         if self.nametable_panel:
             self.ppu.debug_render_nametables(pygame.surfarray.pixels2d(self.nt_buffer_surf))
             scaled = pygame.transform.scale(self.buffer_surf, (self.width * self.scale, self.height * self.scale))

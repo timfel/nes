@@ -162,6 +162,8 @@ class NESPPU:
         self.transparent_color = self._get_non_palette_color()
         self._palette_cache = [[None] * 4, [None] * 4]
 
+        self.screen_buffer = bytearray(b"0" * SCREEN_WIDTH_PX * SCREEN_HEIGHT_PX * 3)
+
         # tell the screen what rgb value the ppu is using to represent transparency
         if self.screen:
             self.screen.transparent_color = self.transparent_color
@@ -470,7 +472,8 @@ class NESPPU:
                     # overlay srpite from latches
                     final_pixel = self._overlay_sprites(bkg_pixel)
                     if final_pixel != self.transparent_color:
-                        self.screen.write_at(x=pixel - 1, y=line, color=final_pixel)
+                        offset = ((pixel - 1) * SCREEN_HEIGHT_PX + line) * 3
+                        self.screen_buffer[offset:offset + 3] = final_pixel
                     #self.shift_bkg_latches()
                 elif pixel == 257:   # pixels 257 - 320
                     # sprite data fetching: fetch data from OAM for sprites on the next scanline
