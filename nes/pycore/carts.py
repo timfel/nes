@@ -57,9 +57,6 @@ class NESCart0(CartBase):
         #rom_data_start = load_rom_at - self.PRG_ROM_START
         #self.rom[rom_data_start:rom_data_start + len(rom_data)] = rom_data
 
-    def irq_tick(self):
-        pass
-
     def read(self, address):
         if address < PRG_ROM_START:
             # ram access
