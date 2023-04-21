@@ -1,6 +1,5 @@
 # import pyximport; pyximport.install()
 
-# from .cycore.carts import NESCart0, NESCart1, NESCart2, NESCart4
 from nes.pycore.carts import NESCart0 as pyNESCart0
 from .pycore.bitwise import upper_nibble, lower_nibble, bit_low, bit_high
 
@@ -145,6 +144,8 @@ class ROM:
                                 )
             else:
                 print("Mapper {} not currently supported in py_compatibility_mode".format(self.mapper_id))
+        else:
+            from .cycore.carts import NESCart0, NESCart1, NESCart2, NESCart4
 
         if self.mapper_id == 0:
             return NESCart0(prg_rom_data=self.prg_rom_data,
