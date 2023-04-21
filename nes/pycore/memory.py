@@ -1,5 +1,18 @@
 import logging
-from functools import lru_cache
+import sys
+if sys.implementation.name not in ["pypy", "graalpy"]:
+    from functools import lru_cache
+else:
+    # lru caching is slower on pypy and graalpy than just recalculating
+    def lru_cache(func=None, maxsize=None):
+        if func:
+            func.cache_clear = lambda: None
+            return func
+        else:
+            def wrapper(func):
+                func.cache_clear = lambda: None
+                return func
+            return wrapper
 #from nes import LOG_MEMORY
 
 
@@ -152,7 +165,7 @@ class NESMappedRAM(MemoryBase):
         else:
             # cartridge space; pass this to the cart, which might do its own mapping
             self.cart.write(address, value)
-        
+
 
     def run_oam_dma(self, page):
         """
